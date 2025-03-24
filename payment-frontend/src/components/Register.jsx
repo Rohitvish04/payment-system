@@ -5,64 +5,128 @@ import axios from 'axios'
 function Register() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [otp, setOtp] = useState('')
+  const [userId, setUserId] = useState(null)
+  const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
 
-  const handleSubmit = async (e) => {
+  const handleRegister = async (e) => {
     e.preventDefault()
     setError('')
+    setMessage('')
     setLoading(true)
+
     try {
-      const response = await axios.post('http://localhost:3000/api/register', {
-        email,
-        password
-      }, {
-        headers: { 'Content-Type': 'application/json' }
-      })
-      localStorage.setItem('token', response.data.token)
-      navigate('/dashboard')
+      const response = await axios.post('http://localhost:3000/api/register', { email, password });
+      setMessage(response.data.message);
+      setUserId(response.data.userId);
+      setEmail('');
+      setPassword('');
     } catch (error) {
-      setError(error.response?.data?.message || 'Registration failed. Please try again.')
-      console.error('Register error:', error)
+      setError(error.response?.data?.message || 'Registration failed');
     } finally {
       setLoading(false)
     }
   }
 
+  const handleVerifyOTP = async (e) => {
+    e.preventDefault()
+    setError('')
+    setMessage('')
+    setLoading(true)
+
+    try {
+      const response = await axios.post('http://localhost:3000/api/verify-otp', { userId, otp });
+      localStorage.setItem('token', response.data.token);
+      setMessage(response.data.message);
+      setTimeout(() => navigate('/dashboard'), 2000);
+    } catch (error) {
+      setError(error.response?.data?.message || 'OTP verification failed');
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Add this inside the OTP form section
+const handleResendOTP = async () => {
+  setLoading(true);
+  try {
+      const response = await axios.post('http://localhost:3000/api/resend-otp', { userId });
+      setMessage(response.data.message);
+  } catch (error) {
+      setError(error.response?.data?.message || 'Failed to resend OTP');
+  } finally {
+      setLoading(false);
+  }
+};
+
   return (
     <div className="max-w-md mx-auto mt-20 p-6 bg-white rounded-lg shadow">
       <h2 className="text-2xl mb-6">Register</h2>
+      {message && <p className="text-green-500 mb-4">{message}</p>}
       {error && <p className="text-red-500 mb-4">{error}</p>}
-      <form onSubmit={handleSubmit}>
-        <input
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="Email"
-          className="w-full p-2 mb-4 border rounded"
-          required
-          disabled={loading}
-          autoComplete="email"
-        />
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Password"
-          className="w-full p-2 mb-4 border rounded"
-          required
-          disabled={loading}
-          autoComplete="new-password"
-        />
-        <button 
-          type="submit" 
-          className="w-full p-2 bg-blue-500 text-white rounded disabled:opacity-50"
-          disabled={loading}
-        >
-          {loading ? 'Registering...' : 'Register'}
-        </button>
-      </form>
+      
+      {!userId ? (
+        <form onSubmit={handleRegister}>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Email"
+            className="w-full p-2 mb-4 border rounded"
+            required
+            disabled={loading}
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Password"
+            className="w-full p-2 mb-4 border rounded"
+            required
+            disabled={loading}
+          />
+          <button 
+            type="submit" 
+            className="w-full p-2 bg-blue-500 text-white rounded disabled:opacity-50"
+            disabled={loading}
+          >
+            {loading ? 'Registering...' : 'Register'}
+          </button>
+        </form>
+      ) : (
+        <form onSubmit={handleVerifyOTP}>
+          <input
+            type="text"
+            value={otp}
+            onChange={(e) => setOtp(e.target.value)}
+            placeholder="Enter OTP"
+            className="w-full p-2 mb-4 border rounded"
+            required
+            disabled={loading}
+          />
+ 
+          <button 
+            type="submit" 
+            className="w-full p-2 bg-blue-500 text-white rounded disabled:opacity-50"
+            disabled={loading}
+          >
+            {loading ? 'Verifying...' : 'Verify OTP'}
+          </button>
+          {/* // Add this in the OTP form JSX */}
+<button 
+    type="button" 
+    onClick={handleResendOTP}
+    className="w-full p-2 mt-2 bg-gray-500 text-white rounded disabled:opacity-50"
+    disabled={loading}
+>
+    {loading ? 'Resending...' : 'Resend OTP'}
+</button>
+        </form>
+      )}
+      
       <p className="mt-4 text-center">
         Already have an account? <Link to="/login" className="text-blue-500">Login</Link>
       </p>

@@ -13,18 +13,13 @@ function Login() {
     e.preventDefault()
     setError('')
     setLoading(true)
+
     try {
-      const response = await axios.post('http://localhost:3000/api/login', {
-        email,
-        password
-      }, {
-        headers: { 'Content-Type': 'application/json' }
-      })
-      localStorage.setItem('token', response.data.token)
-      navigate('/dashboard')
+      const response = await axios.post('http://localhost:3000/api/login', { email, password });
+      localStorage.setItem('token', response.data.token);
+      navigate('/dashboard');
     } catch (error) {
-      setError(error.response?.data?.message || 'Login failed. Please try again.')
-      console.error('Login error:', error)
+      setError(error.response?.data?.message || 'Login failed');
     } finally {
       setLoading(false)
     }
@@ -43,7 +38,6 @@ function Login() {
           className="w-full p-2 mb-4 border rounded"
           required
           disabled={loading}
-          autoComplete="email"
         />
         <input
           type="password"
@@ -53,7 +47,6 @@ function Login() {
           className="w-full p-2 mb-4 border rounded"
           required
           disabled={loading}
-          autoComplete="current-password"
         />
         <button 
           type="submit" 
@@ -64,7 +57,7 @@ function Login() {
         </button>
       </form>
       <p className="mt-4 text-center">
-        Don't have an account? <Link to="/register" className="text-blue-500">Register</Link>
+        Don’t have an account? <Link to="/register" className="text-blue-500">Register</Link>
       </p>
     </div>
   )

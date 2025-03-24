@@ -3,54 +3,135 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const Stripe = require('stripe');
-const cors = require('cors');
+const nodemailer = require('nodemailer');
 const connectDB = require('./config/db');
 const User = require('./models/User');
 const Transaction = require('./models/Transaction');
+const OTP = require('./models/OTP');
 const authMiddleware = require('./middleware/auth');
+const cors = require('cors');
 
 const app = express();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
 app.use(express.json());
-app.use(express.raw({ type: 'application/json' })); // For webhook
+app.use(express.raw({ type: 'application/json' }));
 
-// Log all requests
-app.use((req, res, next) => {
-    console.log(`${req.method} ${req.path}`);
-    next();
+// Email transporter setup (using Gmail as an example)
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS // Use App Password if 2FA is enabled
+    }
 });
 
 // Connect to MongoDB
 connectDB();
 
-// Register
+// Generate OTP
+const generateOTP = () => {
+    return Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
+};
+
+// Register user with OTP
 app.post('/api/register', async (req, res) => {
     try {
         const { email, password } = req.body;
         const hashedPassword = await bcrypt.hash(password, 10);
+
         const user = new User({ email, password: hashedPassword });
         await user.save();
-        const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET);
-        res.status(201).json({ token });
+
+        // Generate and save OTP
+        const otp = generateOTP();
+        const otpDoc = new OTP({ userId: user._id, otp });
+        await otpDoc.save();
+
+        // Send OTP email
+        await transporter.sendMail({
+            from: process.env.EMAIL_USER,
+            to: email,
+            subject: 'Your OTP for Email Verification',
+            text: `Your OTP is: ${otp}. It expires in 10 minutes.`
+        });
+
+        res.status(201).json({ message: 'Registration successful. Please check your email for the OTP.', userId: user._id });
     } catch (error) {
         res.status(400).json({ message: 'Error registering user', error: error.message });
     }
 });
 
-// Login
+// Verify OTP
+app.post('/api/verify-otp', async (req, res) => {
+    try {
+        const { userId, otp } = req.body;
+
+        const otpDoc = await OTP.findOne({ userId, otp });
+        if (!otpDoc) {
+            return res.status(400).json({ message: 'Invalid or expired OTP' });
+        }
+
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        user.isVerified = true;
+        await user.save();
+        await OTP.deleteOne({ _id: otpDoc._id });
+
+        const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET);
+        res.json({ message: 'Email verified successfully', token });
+    } catch (error) {
+        res.status(400).json({ message: 'Error verifying OTP', error: error.message });
+    }
+});
+
+// Login with verification check
 app.post('/api/login', async (req, res) => {
     try {
         const { email, password } = req.body;
         const user = await User.findOne({ email });
+
         if (!user || !await bcrypt.compare(password, user.password)) {
             return res.status(401).json({ message: 'Invalid credentials' });
         }
+
+        if (!user.isVerified) {
+            return res.status(403).json({ message: 'Please verify your email with the OTP sent to you' });
+        }
+
         const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET);
         res.json({ token });
     } catch (error) {
-        res.status(400).json({ message: 'Error logging in', error: error.message });
+        res.status(400).json({ message: 'Error logging in', error });
+    }
+});
+
+app.post('/api/resend-otp', async (req, res) => {
+    try {
+        const { userId } = req.body;
+        const user = await User.findById(userId);
+        if (!user) return res.status(404).json({ message: 'User not found' });
+        if (user.isVerified) return res.status(400).json({ message: 'Email already verified' });
+
+        await OTP.deleteMany({ userId }); // Remove old OTPs
+        const otp = generateOTP();
+        const otpDoc = new OTP({ userId, otp });
+        await otpDoc.save();
+
+        await transporter.sendMail({
+            from: process.env.EMAIL_USER,
+            to: user.email,
+            subject: 'Your New OTP for Email Verification',
+            text: `Your new OTP is: ${otp}. It expires in 10 minutes.`
+        });
+
+        res.json({ message: 'New OTP sent to your email' });
+    } catch (error) {
+        res.status(400).json({ message: 'Error resending OTP', error: error.message });
     }
 });
 
