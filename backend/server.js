@@ -5,8 +5,10 @@ const jwt = require('jsonwebtoken');
 const Stripe = require('stripe');
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const { MailerSend, EmailParams, Sender, Recipient } = require('mailersend');
 const connectDB = require('./config/db');
 const User = require('./models/User');
+const OTP = require('./models/OTP');
 const Transaction = require('./models/Transaction');
 const authMiddleware = require('./middleware/auth');
 const cors = require('cors');
@@ -28,6 +30,9 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
+// MailerSend client
+const mailerSend = new MailerSend({ apiKey: process.env.MAILERSEND_API_KEY });
+ 
 // Connect to MongoDB
 connectDB();
 
@@ -50,7 +55,7 @@ passport.use(new GoogleStrategy({
                 });
             } else {
                 user.googleId = profile.id;
-                user.isVerified = true; // Verify if linked
+                user.isVerified = true;
             }
             await user.save();
         }
@@ -81,10 +86,24 @@ app.get('/auth/google/callback',
     }
 );
 
-// Traditional register
+// Generate OTP
+const generateOTP = () => {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+// Traditional register with OTP
 app.post('/api/register', async (req, res) => {
     try {
         const { email, password } = req.body;
+
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+            return res.status(400).json({ message: 'Invalid recipient email address' });
+        }
+        if (!emailRegex.test(process.env.MAILERSEND_SENDER_EMAIL)) {
+            return res.status(500).json({ message: 'Invalid sender email address in configuration' });
+        }
+
         const hashedPassword = await bcrypt.hash(password, 10);
 
         const existingUser = await User.findOne({ email });
@@ -92,17 +111,55 @@ app.post('/api/register', async (req, res) => {
             return res.status(400).json({ message: 'Email already in use' });
         }
 
-        const user = new User({
-            email,
-            password: hashedPassword,
-            isVerified: true // For simplicity, no email verification here; add if needed
-        });
+        const user = new User({ email, password: hashedPassword });
         await user.save();
 
-        const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET);
-        res.status(201).json({ message: 'Registration successful', token });
+        const otp = generateOTP();
+        const otpDoc = new OTP({ userId: user._id, otp });
+        await otpDoc.save();
+
+        console.log('Sender Email:', process.env.MAILERSEND_SENDER_EMAIL);
+        console.log('Recipient Email:', email);
+
+        const emailParams = new EmailParams()
+            .setFrom(new Sender(process.env.MAILERSEND_SENDER_EMAIL, 'Payment System'))
+            .setTo([new Recipient(email)])
+            .setSubject('Verify Your Email - OTP')
+            .setHtml(`<p>Your OTP is: <strong>${otp}</strong>. It expires in 10 minutes.</p>`);
+
+        await mailerSend.email.send(emailParams);
+        console.log(`OTP sent to ${email}: ${otp}`);
+
+        res.status(201).json({ message: 'Registration successful. Check your email for OTP.', userId: user._id });
     } catch (error) {
+        console.error('Error in registration:', error.response?.data || error);
         res.status(400).json({ message: 'Error registering user', error: error.message });
+    }
+});
+
+// Verify OTP
+app.post('/api/verify-otp', async (req, res) => {
+    try {
+        const { userId, otp } = req.body;
+
+        const otpDoc = await OTP.findOne({ userId, otp });
+        if (!otpDoc) {
+            return res.status(400).json({ message: 'Invalid or expired OTP' });
+        }
+
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        user.isVerified = true;
+        await user.save();
+        await OTP.deleteOne({ _id: otpDoc._id });
+
+        const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET);
+        res.json({ message: 'Email verified successfully', token });
+    } catch (error) {
+        res.status(400).json({ message: 'Error verifying OTP', error: error.message });
     }
 });
 
@@ -125,7 +182,7 @@ app.post('/api/login', async (req, res) => {
         }
 
         if (!user.isVerified) {
-            return res.status(403).json({ message: 'Account not verified' });
+            return res.status(403).json({ message: 'Please verify your email with OTP' });
         }
 
         const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET);
