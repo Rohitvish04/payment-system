@@ -1,18 +1,18 @@
-import { useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import axios from 'axios'
+import { useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import axios from 'axios';
 
 function Login() {
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-  const navigate = useNavigate()
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
-    e.preventDefault()
-    setError('')
-    setLoading(true)
+    e.preventDefault();
+    setError('');
+    setLoading(true);
 
     try {
       const response = await axios.post('http://localhost:3000/api/login', { email, password });
@@ -21,9 +21,13 @@ function Login() {
     } catch (error) {
       setError(error.response?.data?.message || 'Login failed');
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
+
+  const handleGoogleLogin = () => {
+    window.location.href = 'http://localhost:3000/auth/google';
+  };
 
   return (
     <div className="max-w-md mx-auto mt-20 p-6 bg-white rounded-lg shadow">
@@ -56,11 +60,17 @@ function Login() {
           {loading ? 'Logging in...' : 'Login'}
         </button>
       </form>
+      <button 
+        onClick={handleGoogleLogin}
+        className="w-full p-2 mt-4 bg-red-500 text-white rounded"
+      >
+        Login with Google
+      </button>
       <p className="mt-4 text-center">
         Don’t have an account? <Link to="/register" className="text-blue-500">Register</Link>
       </p>
     </div>
-  )
+  );
 }
 
-export default Login
+export default Login;
