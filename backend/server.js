@@ -21,7 +21,6 @@ app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
 app.use(express.json());
 app.use(express.raw({ type: 'application/json' }));
 
-// Session setup for Passport
 app.use(session({
     secret: process.env.SESSION_SECRET || 'your-session-secret',
     resave: false,
@@ -30,13 +29,12 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
-// MailerSend client
 const mailerSend = new MailerSend({ apiKey: process.env.MAILERSEND_API_KEY });
- 
+
 // Connect to MongoDB
 connectDB();
 
-// Passport Google Strategy
+// Passport Google Strategy (unchanged from previous)
 passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
@@ -50,7 +48,7 @@ passport.use(new GoogleStrategy({
                 user = new User({
                     googleId: profile.id,
                     email: profile.emails[0].value,
-                    password: 'google-auth-' + profile.id, // Dummy password
+                    password: 'google-auth-' + profile.id,
                     isVerified: true
                 });
             } else {
@@ -75,9 +73,11 @@ passport.deserializeUser(async (id, done) => {
     }
 });
 
-// Google auth routes
-app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
+app.get('/', (req, res) => {
+    res.send('Server is running!');
+});
 
+app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
 app.get('/auth/google/callback', 
     passport.authenticate('google', { failureRedirect: '/login' }),
     (req, res) => {
@@ -87,8 +87,35 @@ app.get('/auth/google/callback',
 );
 
 // Generate OTP
-const generateOTP = () => {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
+
+// Payment Notification Function
+const sendPaymentNotification = async (user, transaction) => {
+    try {
+        const statusMessages = {
+            pending: 'Your payment is being processed.',
+            succeeded: 'Your payment was successful!',
+            failed: 'Your payment failed. Please try again.'
+        };
+
+        const emailParams = new EmailParams()
+            .setFrom(new Sender(process.env.MAILERSEND_SENDER_EMAIL, 'Payment System'))
+            .setTo([new Recipient(user.email)])
+            .setSubject(`Payment Update: $${(transaction.amount / 100).toFixed(2)} ${transaction.currency.toUpperCase()}`)
+            .setHtml(`
+                <p>Hello ${user.email},</p>
+                <p>${statusMessages[transaction.status]}</p>
+                <p>Amount: $${(transaction.amount / 100).toFixed(2)} ${transaction.currency.toUpperCase()}</p>
+                <p>Transaction ID: ${transaction.paymentIntentId}</p>
+                <p>Status: ${transaction.status}</p>
+                <p>Thank you for using our service!</p>
+            `);
+
+        await mailerSend.email.send(emailParams);
+        console.log(`Payment notification sent to ${user.email} for transaction ${transaction.paymentIntentId}`);
+    } catch (error) {
+        console.error('Error sending payment notification:', error.response?.data || error);
+    }
 };
 
 // Traditional register with OTP
@@ -96,12 +123,15 @@ app.post('/api/register', async (req, res) => {
     try {
         const { email, password } = req.body;
 
+        // Validate email format
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(email)) {
-            return res.status(400).json({ message: 'Invalid recipient email address' });
+            return res.status(400).json({ message: 'Invalid email address' });
         }
-        if (!emailRegex.test(process.env.MAILERSEND_SENDER_EMAIL)) {
-            return res.status(500).json({ message: 'Invalid sender email address in configuration' });
+
+        // Check sender email
+        if (!process.env.MAILERSEND_SENDER_EMAIL) {
+            return res.status(500).json({ message: 'Sender email not configured' });
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
@@ -132,7 +162,7 @@ app.post('/api/register', async (req, res) => {
 
         res.status(201).json({ message: 'Registration successful. Check your email for OTP.', userId: user._id });
     } catch (error) {
-        console.error('Error in registration:', error.response?.data || error);
+        console.error('Error in registration:', error);
         res.status(400).json({ message: 'Error registering user', error: error.message });
     }
 });
@@ -200,28 +230,38 @@ app.get('/api/logout', (req, res) => {
 });
 
 // Create payment intent
+// Create Payment Intent
 app.post('/api/create-payment-intent', authMiddleware, async (req, res) => {
     try {
         const { amount } = req.body;
+        const user = await User.findById(req.user.userId);
+
+        if (!amount || isNaN(amount) || amount <= 0) {
+            return res.status(400).json({ message: 'Invalid amount' });
+        }
+
         const paymentIntent = await stripe.paymentIntents.create({
-            amount: amount * 100,
+            amount: amount * 100, // Convert to cents
             currency: 'usd',
-            metadata: { userId: req.user.userId }
+            automatic_payment_methods: { enabled: true }
         });
+
         const transaction = new Transaction({
-            userId: req.user.userId,
-            amount,
-            type: 'deposit',
-            stripePaymentIntentId: paymentIntent.id // Must match webhook's paymentIntent.id
+            userId: user._id,
+            amount: amount * 100,
+            paymentIntentId: paymentIntent.id,
+            status: 'pending'
         });
         await transaction.save();
-        console.log('Created transaction with PaymentIntent ID:', paymentIntent.id); // Debug log
-        res.json({ clientSecret: paymentIntent.client_secret, transactionId: transaction._id });
+
+        await sendPaymentNotification(user, transaction);
+
+        res.json({ clientSecret: paymentIntent.client_secret });
     } catch (error) {
-        res.status(400).json({ message: 'Payment error', error: error.message });
+        console.error('Error creating payment intent:', error);
+        res.status(400).json({ message: 'Error creating payment intent', error: error.message });
     }
 });
-
 // Get transactions
 app.get('/api/transactions', authMiddleware, async (req, res) => {
     try {
@@ -233,6 +273,56 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
     }
 });
 
+// In server.js
+app.get('/api/transaction/:id', authMiddleware, async (req, res) => {
+    try {
+        const transaction = await Transaction.findOne({
+            _id: req.params.id,
+            userId: req.user.userId
+        });
+
+        if (!transaction) {
+            return res.status(404).json({ message: 'Transaction not found' });
+        }
+
+        let receiptUrl = null;
+        let paymentMethodType = null;
+        let last4 = null;
+
+        if (transaction.status === 'succeeded') {
+            try {
+                const paymentIntent = await stripe.paymentIntents.retrieve(transaction.paymentIntentId);
+                if (paymentIntent.charges.data.length > 0) {
+                    receiptUrl = paymentIntent.charges.data[0].receipt_url;
+                    const charge = paymentIntent.charges.data[0];
+                    paymentMethodType = charge.payment_method_details.type; // e.g., "card"
+                    if (paymentMethodType === 'card') {
+                        last4 = charge.payment_method_details.card.last4; // Last 4 digits
+                    }
+                }
+            } catch (stripeError) {
+                console.error('Stripe API error:', stripeError.message);
+                // Continue without receiptUrl if Stripe fails
+            }
+        }
+
+        res.json({
+            id: transaction._id,
+            amount: transaction.amount / 100, // Convert cents to dollars
+            currency: transaction.currency,
+            paymentIntentId: transaction.paymentIntentId,
+            status: transaction.status,
+            createdAt: transaction.createdAt,
+            receiptUrl, // Null if unavailable
+            paymentMethodType, // e.g., "card"
+            last4 // e.g., "4242" for card payments
+        });
+    } catch (error) {
+        console.error('Error fetching transaction:', error);
+        res.status(400).json({ message: 'Error fetching transaction', error: error.message });
+    }
+});
+
 // Get balance
 app.get('/api/balance', authMiddleware, async (req, res) => {
     try {
@@ -241,6 +331,53 @@ app.get('/api/balance', authMiddleware, async (req, res) => {
     } catch (error) {
         res.status(400).json({ message: 'Error fetching balance', error: error.message });
     }
+});
+
+
+
+// Stripe Webhook for Payment Updates
+app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+    const sig = req.headers['stripe-signature'];
+    let event;
+
+    console.log('Webhook request received:', {
+        signature: sig,
+        bodyLength: req.body.length,
+        secret: process.env.STRIPE_WEBHOOK_SECRET ? 'Set' : 'Missing'
+    });
+
+    try {
+        event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+        console.log('Webhook event parsed:', event.type, event.data.object.id);
+    } catch (err) {
+        console.error('Webhook error:', err.message);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if (event.type === 'payment_intent.succeeded' || event.type === 'payment_intent.payment_failed') {
+        const paymentIntent = event.data.object;
+        console.log('Processing PaymentIntent:', paymentIntent.id);
+
+        const transaction = await Transaction.findOne({ paymentIntentId: paymentIntent.id });
+        if (transaction) {
+            transaction.status = event.type === 'payment_intent.succeeded' ? 'succeeded' : 'failed';
+            await transaction.save();
+            console.log('Transaction updated:', transaction._id, 'to', transaction.status);
+
+            const user = await User.findById(transaction.userId);
+            user.balance += event.type === 'payment_intent.succeeded' ? transaction.amount : 0;
+            await user.save();
+            console.log('User balance updated:', user.email, 'to', user.balance);
+
+            await sendPaymentNotification(user, transaction);
+        } else {
+            console.error('Transaction not found for PaymentIntent:', paymentIntent.id);
+        }
+    } else {
+        console.log('Unhandled event type:', event.type);
+    }
+
+    res.json({ received: true });
 });
 
 // Webhook
